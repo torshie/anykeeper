@@ -1,0 +1,238 @@
+#!/usr/bin/env python
+
+##
+# Copyright (c) 2014, Deng Yao <torshie@gmail.com>
+# All rights reserved.
+# 
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are
+# met:
+# 
+# 1. Redistributions of source code must retain the above copyright notice,
+#    this list of conditions and the following disclaimer. 
+# 2. Redistributions in binary form must reproduce the above copyright
+#    notice, this list of conditions and the following disclaimer in the
+#    documentation and/or other materials provided with the distribution.
+# 
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+# "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED
+# TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A
+# PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER
+# OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
+# EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+# PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
+# PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
+# LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+# NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+# SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+import grp
+import json
+import os.path
+import pwd
+import stat
+import sys
+
+kConfigPath = ".anykeeper.conf"
+kMetaDbPath = ".anykeeper.meta"
+kGitHook = ".git/hooks/pre-commit"
+
+def getUserName(uid):
+    try:
+        return pwd.getpwuid(uid).pw_name
+    except KeyError:
+        return str(uid)
+
+def getGroupName(gid):
+    try:
+        return grp.getgrgid(gid).gr_name
+    except KeyError:
+        return str(gid)
+
+def enterProjectRoot():
+    origin = os.path.abspath(os.getcwd())
+    while not os.path.isfile(kMetaDbPath) \
+            and os.path.abspath(".") != "/":
+        os.chdir("..")
+
+    if os.path.abspath(".") == "/":
+        os.chdir(origin)
+    return origin
+
+def error(msg):
+    sys.stderr.write("anykeeper: " + msg + "\n")
+
+def printHelpMessage():
+    error("Usage: anykeeper <init | pre-commit>");
+
+def passConfig():
+    cfg = {}
+    for l in open(kConfigPath):
+        if l[0] == '#':
+            continue
+        if l.find("=") == -1:
+            continue
+        arr = l.split('=', 1)
+        cfg[arr[0].strip()] = arr[1].strip()
+    return cfg
+
+def createDefaultConfig():
+    config = """## Any keeper configuration file.
+
+# Whether to use numeric UID/GID. If it is set to "true", anykeeper will
+# always use numeric UID/GID, otherwise, human readable user/group name(s)
+# will be used, unless the corresponding user/group doesn't exist in the
+# hosting system.
+USE_NUMERIC_UID = true
+"""
+    f = open(kConfigPath, "w")
+    f.write(config)
+    f.close()
+
+def changeOwner(path, user, group):
+    try:
+        uid = int(user)
+    except ValueError:
+        uid = pwd.getpwnam(user).pw_uid
+    try:
+        gid = int(group)
+    except ValueError:
+        gid = grp.getgrnam(group).gr_gid
+    os.chown(path, uid, gid)
+
+def recoverFile(name, info):
+    if not os.path.exists(name):
+        if stat.S_ISDIR(info[0]):
+            os.mkdir(name)
+        elif stat.S_ISCHR(info[0]):
+            os.mknod(name, stat.S_IMODE(info[0]) | stat.S_IFCHR, info[3])
+        elif stat.S_ISBLK(info[0]):
+            os.mknod(name, stat.S_IMODE(info[0]) | stat.S_IFBLK, info[3])
+        elif stat.S_ISFIFO(info[0]):
+            os.mknod(name, stat.S_IMODE(info[0]) | stat.S_IFIFO)
+    if os.path.exists(name):
+        changeOwner(name, info[1], info[2])
+        os.chmod(name, stat.S_IMODE(info[0]))
+
+def updateFileMeta():
+    start = True
+    dec = json.JSONDecoder()
+    for l in open(kMetaDbPath):
+        if start:
+            start = False
+            name = dec.decode(l)
+            continue
+        info = l.split()
+        info[0] = int(info[0])
+        if len(info) == 4:
+            info[3] = int(info[3])
+        recoverFile(name, info)
+        start = True
+
+def addGitHook(origin):
+    f = open(kGitHook, "w")
+    f.write("#!/bin/sh\n\nset -e\n\n")
+    if sys.argv[0].find("/") == -1 or sys.argv[0][0] == "/":
+        f.write(sys.argv[0] + " pre-commit\n")
+    else:
+        f.write(origin + "/" + sys.argv[0] + " pre-commit\n")
+    f.close()
+    os.chmod(kGitHook, 0755)
+
+def initProject(origin):
+    if not os.path.isfile(kGitHook):
+        addGitHook(origin)
+
+    if os.path.isfile(kConfigPath):
+        return updateFileMeta()
+
+    if not os.path.isdir(".git"):
+        os.system("git init")
+    createDefaultConfig()
+    open(kMetaDbPath, "w").close()
+    return 0
+
+def walkDirectoryTree(path):
+    if os.path.islink(path):
+        return []
+    s = os.stat(path)
+    if stat.S_ISSOCK(s.st_mode):
+        return []
+
+    if stat.S_ISCHR(s.st_mode) or stat.S_ISBLK(s.st_mode):
+        info = (path, s.st_mode, s.st_uid, s.st_gid, s.st_rdev)
+    else:
+        info = (path, s.st_mode, s.st_uid, s.st_gid)
+
+    if not os.path.isdir(path):
+        return [info]
+
+    l = []
+    for sub in os.listdir(path):
+        l.extend(walkDirectoryTree(os.path.join(path, sub)));
+    l.append(info)
+    return l
+
+def compareFileInfo(a, b):
+    if a[0] > b[0]:
+        return 1
+    elif a[0] == b[0]:
+        return 0
+    else:
+        return -1
+
+def writeFileInfo(io, info, numeric):
+    enc = json.JSONEncoder()
+    io.write(enc.encode(info[0]) + "\n" + str(info[1]))
+    if numeric:
+        owner = str(info[2]) + " " + str(info[3])
+    else:
+        owner = getUserName(info[2]) + " " + getGroupName(info[3])
+    io.write(" " + owner)
+    if len(info) == 5:
+        io.write(" " + str(info[4]))
+    io.write("\n")
+
+def writeMetaDb():
+    config = passConfig()
+
+    info = []
+    for sub in os.listdir("."):
+        if sub == ".git":
+            continue
+        info.extend(walkDirectoryTree(sub))
+    info.sort(compareFileInfo)
+
+    f = open(kMetaDbPath, "w")
+    if config["USE_NUMERIC_UID"].lower() \
+            in ("true", "yes", "on", "y", "1", "t"):
+        for i in info:
+            writeFileInfo(f, i, True)
+    else:
+        for i in info:
+            writeFileInfo(f, i, False)
+    f.close()
+    os.system("git add " + kMetaDbPath)
+    return 0
+
+def main():
+    origin = enterProjectRoot()
+
+    if len(sys.argv) == 1 \
+            and os.path.basename(sys.argv[0]) == "pre-commit":
+        return writeMetaDb()
+
+    if len(sys.argv) != 2 or not (sys.argv[1] in ("init", "pre-commit")):
+        printHelpMessage()
+        return 1
+
+    if (sys.argv[1] == "init"):
+        return initProject(origin)
+
+    if not os.path.isfile(kConfigPath):
+        sys.stderr.write(os.getcwd() + "/" + kConfigPath + " missing\n");
+        return 1
+    return writeMetaDb()
+
+if __name__ == "__main__":
+    sys.exit(main())
