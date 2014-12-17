@@ -51,7 +51,7 @@ def getGroupName(gid):
 
 def enterProjectRoot():
     origin = os.path.abspath(os.getcwd())
-    while not os.path.isfile(kMetaDbPath) \
+    while not os.path.isfile(".git/config") \
             and os.path.abspath(".") != "/":
         os.chdir("..")
 

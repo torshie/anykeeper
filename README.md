@@ -27,9 +27,9 @@ First make sure your working copy is clean, if not, commit or revert your
 changes. Then execute command "anykeeper init" inside your project to
 initialize anykeeper. This command will create two regular files
 (.anykeeper.conf, .anykeeper.meta) and a git hook (.git/hooks/pre-commit).
-If the git hook already exists, you have to edit it manually to execute the
-command. Finally commit the two newly created file .anykeeper.conf &
-.anykeeper.meta.
+If the git hook already exists, you have to edit it manually to execute
+command "/path/to/anykeeper pre-commit". Finally commit the two newly
+created file .anykeeper.conf & .anykeeper.meta.
 
 From now on, after every git command that would change the contents of your
 working copy, for example, checkout/pull, you have to run command
